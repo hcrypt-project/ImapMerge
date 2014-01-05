@@ -22,20 +22,22 @@
 #include <openssl/pem.h>
 
 int checkMulti(char *s);
-int readLine(int sockfd,char *buf,int size);
+int readLine(int sockfd,SSL *ssl,char *buf,int size);
 char *stripCrlf(char *s);
+
+int tlsmode=0;
 
 int main(int argc, char *argv[])
 {
     int listenfd = 0, clientfd = 0;
-    int logout=0,multi=0,starttls=0,tlsmode=0;
+    int logout=0,multi=0,starttls=0;
 	int serverfd = 0, n = 0;
 
 	struct sockaddr_in serv_addr;
 	struct sockaddr_in imap_addr;
 
-	char recvBuff[1024];
-    char sendBuff[1025];
+	char clBuff[1025];
+    char svBuff[1025];
 
     const SSL_METHOD *method;
     SSL_CTX *ctx;
@@ -58,7 +60,7 @@ int main(int argc, char *argv[])
 
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     memset(&serv_addr, '0', sizeof(serv_addr));
-    memset(sendBuff, '0', sizeof(sendBuff));
+
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -76,7 +78,8 @@ int main(int argc, char *argv[])
 
         puts("imapmerged: client connected.");
         ////
-		memset(recvBuff, '0',sizeof(recvBuff));
+        memset(svBuff, '0',sizeof(svBuff));
+		memset(clBuff, '0',sizeof(clBuff));
 		if((serverfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
 		{
 			printf("imapmerged: could not create socket \n");
@@ -106,10 +109,10 @@ int main(int argc, char *argv[])
 		puts("imapmerged: connected to remote IMAP server.");
 
 		// read server info message
-		if( (n = readLine(serverfd, recvBuff, sizeof(recvBuff)-1)) > 0)
+		if( (n = readLine(serverfd, NULL, svBuff, sizeof(svBuff)-1)) > 0)
 		{
 			//recvBuff[n] = 0;
-			printf("imapmerged: server string(%d)=%s\n",n,stripCrlf(recvBuff));
+			printf("imapmerged: server string(%d)=%s\n",n,stripCrlf(svBuff));
 
 		}
 		else if(n<0)
@@ -119,20 +122,21 @@ int main(int argc, char *argv[])
 		}
 
 		// forward server info message
-		write(clientfd, recvBuff, n);
+		write(clientfd, svBuff, n);
 		puts("imapmerged: server string delivered.");fflush(stdout);
 
 		logout=0;
 		starttls=0;
 		tlsmode=0;
+		ssl=NULL;
 
 		while(!logout)
 		{
 			// read client command
-			if ( (n = readLine(clientfd, recvBuff, sizeof(recvBuff)-1)) > 0)
+			if ( (n = readLine(clientfd, NULL, clBuff, sizeof(clBuff)-1)) > 0)
 			{
 				//recvBuff[n] = 0;
-				printf("imapmerged: client='%s'\n",stripCrlf(recvBuff));
+				printf("imapmerged: client='%s'\n",stripCrlf(clBuff));
 			}
 			else if(n<0)
 			{
@@ -140,32 +144,34 @@ int main(int argc, char *argv[])
 				return -1;
 			}
 
-			if(strstr(recvBuff," LOGOUT"))
+			if(strstr(clBuff," LOGOUT"))
 			{
 				logout=1;
 				puts("imapmerged: LOGOUT requested.");
 			}
 
-			if(strstr(recvBuff," STARTTLS"))
+			if(strstr(clBuff," STARTTLS"))
 			{
 				starttls=1;
 				//logout=1;
 				puts("imapmerged: STARTTLS requested.");
 			}
 			/////
-			write(serverfd, recvBuff, n);
+			if(!tlsmode||ssl==NULL)
+				write(serverfd, clBuff, n);
+			else
+				SSL_write(ssl, clBuff, n);
 
 			puts("imapmerged: start multiline processing.");
 			multi=1;
 			while(multi)
 			{
-				// read client command
-				if ( (n = readLine(serverfd, recvBuff, sizeof(recvBuff)-1)) > 0)
+				if ( (n = readLine(serverfd, ssl, svBuff, sizeof(svBuff)-1)) > 0)
 				{
 					//recvBuff[n] = 0;
-					printf("imapmerged: server='%s'\n",stripCrlf(recvBuff));
-					write(clientfd, recvBuff, n);
-					if(*recvBuff!='*')
+					printf("imapmerged: server='%s'\n",stripCrlf(svBuff));
+					write(clientfd, svBuff, n);
+					if(*svBuff!='*')
 						multi=0;
 				}
 				else
@@ -199,11 +205,25 @@ int main(int argc, char *argv[])
 					puts("imapmerged: TLS negotiation successful.");
 
 				tlsmode=1;
-				//logout=1;
+				starttls=0;
 			}
 
 		}
 
+		if(tlsmode)
+		{
+			puts("imapmerged: shutting down TLS session.");
+			if( SSL_ST_OK == SSL_state( ssl ) )
+			{
+				n = SSL_shutdown( ssl );
+				if( n == 0 )
+				{
+				  n = SSL_shutdown( ssl );
+				}
+			}
+
+			printf("imapmerged: TLS shutdown state=%d (%s)\n",n,n==1?"fine":"error");
+		}
 		close(clientfd);
 		puts("imapmerged: client connection closed.");
 		close(serverfd);
@@ -231,21 +251,39 @@ int checkMulti(char *s)
 
 }
 
-int readLine(int sockfd,char *buf,int size)
+int readLine(int sockfd,SSL *ssl,char *buf,int size)
 {
 	int r=0,n=0;
 
 	while(r<size)
 	{
-		if ( (n = read(sockfd, buf+r, 1)) > 0)
+		if(!tlsmode||(ssl==NULL))
 		{
-			r++;
-			if(r>1)
+			if ( (n = read(sockfd, buf+r, 1)) > 0)
 			{
-				if(!memcmp(buf+r-2,"\r\n",2))
+				r++;
+				if(r>1)
 				{
-					buf[r]=0;
-					return r;
+					if(!memcmp(buf+r-2,"\r\n",2))
+					{
+						buf[r]=0;
+						return r;
+					}
+				}
+			}
+		}
+		else
+		{
+			if ( (n = SSL_read(ssl, buf+r, 1)) > 0)
+			{
+				r++;
+				if(r>1)
+				{
+					if(!memcmp(buf+r-2,"\r\n",2))
+					{
+						buf[r]=0;
+						return r;
+					}
 				}
 			}
 		}
