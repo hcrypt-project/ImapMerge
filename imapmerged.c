@@ -301,7 +301,7 @@ char *stripCrlf(char *s)
 	else
 	{
 		strcpy(stripBuf,s);
-		if(c=(char*)strstr(stripBuf,"\r\n"))
+		if((c=(char*)strstr(stripBuf,"\r\n")))
 			*c=0;
 	}
 	return stripBuf;
