@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
 {
     int listenfd = 0, clientfd = 0;
     int logout=0,multi=0,starttls=0,fetch=0;
-	int serverfd = 0, n = 0,res=0;
+	int serverfd = 0, n = 0;
 
 	struct sockaddr_in serv_addr;
 	struct sockaddr_in imap_addr;
@@ -212,7 +212,7 @@ int main(int argc, char *argv[])
 
 					if(tlsmode)
 					{
-						res=SSL_write(cl_ssl, svBuff, n);
+						SSL_write(cl_ssl, svBuff, n);
 						//printf("imapmerged: server message delivered (TLS,res=%d).\n",res);
 					}
 
@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
 				else
 				{
 					printf("imapmerged: read error 2.\n");
-					return -1;
+					//return -1;
 				}
 				/////
 
@@ -256,6 +256,7 @@ int main(int argc, char *argv[])
 				//SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
 
 				ssl = SSL_new(ctx);
+				SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
 
 				SSL_set_fd(ssl, serverfd);
 
@@ -290,6 +291,7 @@ int main(int argc, char *argv[])
 				cl_ctx = InitServerCTX();        /* initialize SSL */
 			    LoadCertificates(cl_ctx, "/usr/share/doc/libssl-doc/demos/sign/cert.pem", "/usr/share/doc/libssl-doc/demos/sign/key.pem"); /* load certs */
 			    cl_ssl = SSL_new(cl_ctx);              /* get new SSL state with context */
+			    SSL_set_mode(cl_ssl, SSL_MODE_AUTO_RETRY);
 			    SSL_set_fd(cl_ssl, clientfd);      /* set connection socket to SSL state */
 				printf("imapmerged: deliver TLS starter '%s'.\n",stripCrlf(svBuff));
 				write(clientfd, svBuff, n); //'OK begin negotiation' ausliefern
